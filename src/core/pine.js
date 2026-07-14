@@ -8,7 +8,12 @@ import { evaluate, evaluateAsync, getClient } from '../connection.js';
 // ── Monaco finder (injected into TV page) ──
 const FIND_MONACO = `
   (function findMonacoEditor() {
-    var container = document.querySelector('.monaco-editor.pine-editor-monaco');
+    // TradingView keeps a hidden Monaco placeholder in the DOM and mounts the
+    // real Pine editor in a dialog. Always prefer the visible instance; using
+    // querySelector() alone can select the hidden placeholder, which has no
+    // React fiber and makes every Pine command time out.
+    var containers = Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco'));
+    var container = containers.find(function(el) { return el.offsetParent !== null; }) || containers[0];
     if (!container) return null;
     var el = container;
     var fiberKey;
@@ -26,7 +31,19 @@ const FIND_MONACO = `
         var env = current.memoizedProps.value.monacoEnv;
         if (env.editor && typeof env.editor.getEditors === 'function') {
           var editors = env.editor.getEditors();
-          if (editors.length > 0) return { editor: editors[0], env: env };
+          if (editors.length > 0) {
+            // getEditors() retains stale/hidden editor instances. Match the
+            // editor by its visible DOM node instead of blindly taking [0].
+            var editor = editors.find(function(ed) {
+              var node = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
+              return node && node.offsetParent !== null &&
+                (node === container || node.contains(container) || container.contains(node));
+            }) || editors.find(function(ed) {
+              var node = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
+              return node && node.offsetParent !== null;
+            }) || editors[editors.length - 1];
+            return { editor: editor, env: env };
+          }
         }
       }
       current = current.return;

@@ -673,10 +673,12 @@ describe('TradingView MCP — Full E2E (70 tools)', () => {
     });
 
     async function ensureEditor() {
-      const already = await evaluate(`!!document.querySelector('.monaco-editor.pine-editor-monaco')`);
+      const already = await evaluate(`Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco')).some(function(el) { return el.offsetParent !== null; })`);
       if (already) return true;
       await evaluate(`
         (function() {
+          var button = document.querySelector('button[aria-label="Pine"][data-name="pine-dialog-button"]');
+          if (button) { button.click(); return; }
           var bwb = window.TradingView && window.TradingView.bottomWidgetBar;
           if (bwb && typeof bwb.activateScriptEditorTab === 'function') bwb.activateScriptEditorTab();
           else if (bwb && typeof bwb.showWidget === 'function') bwb.showWidget('pine-editor');
@@ -684,7 +686,7 @@ describe('TradingView MCP — Full E2E (70 tools)', () => {
       `);
       for (let i = 0; i < 50; i++) {
         await sleep(200);
-        const ready = await evaluate(`!!document.querySelector('.monaco-editor.pine-editor-monaco')`);
+        const ready = await evaluate(`Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco')).some(function(el) { return el.offsetParent !== null; })`);
         if (ready) return true;
       }
       return false;
@@ -692,7 +694,8 @@ describe('TradingView MCP — Full E2E (70 tools)', () => {
 
     const FIND_MONACO = `
       (function findMonacoEditor() {
-        var container = document.querySelector('.monaco-editor.pine-editor-monaco');
+        var containers = Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco'));
+        var container = containers.find(function(el) { return el.offsetParent !== null; }) || containers[0];
         if (!container) return null;
         var el = container;
         var fiberKey;
@@ -710,7 +713,17 @@ describe('TradingView MCP — Full E2E (70 tools)', () => {
             var env = current.memoizedProps.value.monacoEnv;
             if (env.editor && typeof env.editor.getEditors === 'function') {
               var editors = env.editor.getEditors();
-              if (editors.length > 0) return { editor: editors[0], env: env };
+              if (editors.length > 0) {
+                var editor = editors.find(function(ed) {
+                  var node = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
+                  return node && node.offsetParent !== null &&
+                    (node === container || node.contains(container) || container.contains(node));
+                }) || editors.find(function(ed) {
+                  var node = typeof ed.getDomNode === 'function' ? ed.getDomNode() : null;
+                  return node && node.offsetParent !== null;
+                }) || editors[editors.length - 1];
+                return { editor: editor, env: env };
+              }
             }
           }
           current = current.return;
@@ -1033,16 +1046,43 @@ val = array.get(a, 5)`;
       const bwb = await apiExists(BOTTOM_BAR);
       assert.ok(bwb, 'bottomWidgetBar exists');
 
-      // Open
-      await evaluate(`${BOTTOM_BAR}.showWidget('pine-editor')`);
+      await evaluate(`
+        (function() {
+          var visible = Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco')).some(function(el) { return el.offsetParent !== null; });
+          if (visible) return;
+          var button = document.querySelector('button[aria-label="Pine"][data-name="pine-dialog-button"]');
+          if (button) button.click();
+          else if (typeof ${BOTTOM_BAR}.activateScriptEditorTab === 'function') ${BOTTOM_BAR}.activateScriptEditorTab();
+        })()
+      `);
       await sleep(500);
-      const isOpen = await evaluate(`!!document.querySelector('.monaco-editor.pine-editor-monaco')`);
+      const isOpen = await evaluate(`Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco')).some(function(el) { return el.offsetParent !== null; })`);
+      assert.ok(isOpen, 'Pine editor opened');
 
-      // Close
-      await evaluate(`${BOTTOM_BAR}.hideWidget('pine-editor')`);
+      const closeRequested = await evaluate(`
+        (function() {
+          var dialog = document.querySelector('[data-qa-id="pine-editor-dialog"]');
+          var close = (dialog && dialog.querySelector('button[aria-label="Close"], button[aria-label="Schließen"]')) ||
+            Array.prototype.slice.call(document.querySelectorAll('button[aria-label="Close"], button[aria-label="Schließen"]')).find(function(button) { return button.offsetParent !== null; });
+          if (!close) return false;
+          close.click();
+          return true;
+        })()
+      `);
       await sleep(300);
+      assert.ok(closeRequested, 'Pine editor close requested');
 
-      assert.ok(typeof isOpen === 'boolean', 'Panel toggle works');
+      // A dirty editor can ask whether to save. Discard only the E2E model;
+      // the test never saves it to the user's cloud script.
+      await evaluate(`
+        (function() {
+          var buttons = Array.prototype.slice.call(document.querySelectorAll('button'));
+          var discard = buttons.find(function(button) {
+            return /don't save|do not save|nicht speichern|verwerfen/i.test((button.textContent || '').trim());
+          });
+          if (discard && discard.offsetParent !== null) discard.click();
+        })()
+      `);
     });
 
     it('ui_fullscreen — find fullscreen button', async () => {
@@ -1157,9 +1197,15 @@ val = array.get(a, 5)`;
         const rp = REPLAY_API;
         const started = await evaluate(wv(`${rp}.isReplayStarted()`));
         if (started) {
-          await evaluate(`${rp}.stopReplay()`);
-          await evaluate(`${rp}.goToRealtime()`);
-          await evaluate(`${rp}.hideReplayToolbar()`);
+          await evaluate(`
+            (function() {
+              var replay = ${rp};
+              var manager = replay._replayUIController && replay._replayUIController._replayManager;
+              if (manager && manager._isReplayStopping === true) manager._isReplayStopping = false;
+              if (manager && typeof manager._stopReplay === 'function') manager._stopReplay();
+              replay.stopReplay();
+            })()
+          `);
           await sleep(500);
         }
       } catch {}
@@ -1234,9 +1280,15 @@ val = array.get(a, 5)`;
       const started = await evaluate(wv(`${REPLAY_API}.isReplayStarted()`));
       if (!started) return;
 
-      await evaluate(`${REPLAY_API}.stopReplay()`);
-      await evaluate(`${REPLAY_API}.goToRealtime()`);
-      await evaluate(`${REPLAY_API}.hideReplayToolbar()`);
+      await evaluate(`
+        (function() {
+          var replay = ${REPLAY_API};
+          var manager = replay._replayUIController && replay._replayUIController._replayManager;
+          if (manager && manager._isReplayStopping === true) manager._isReplayStopping = false;
+          if (manager && typeof manager._stopReplay === 'function') manager._stopReplay();
+          replay.stopReplay();
+        })()
+      `);
       await sleep(500);
 
       const stoppedNow = await evaluate(wv(`${REPLAY_API}.isReplayStarted()`));

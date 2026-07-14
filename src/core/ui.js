@@ -41,16 +41,45 @@ export async function openPanel({ panel, action }) {
         var action = ${JSON.stringify(action)};
         var bottomArea = document.querySelector('[class*="layout__area--bottom"]');
         var isOpen = !!(bottomArea && bottomArea.offsetHeight > 50);
-        if (panel === 'pine-editor') { var monacoEl = document.querySelector('.monaco-editor.pine-editor-monaco'); isOpen = isOpen && !!monacoEl; }
+        var pineDialog = null;
+        var pineButton = null;
+        if (panel === 'pine-editor') {
+          var monacoEls = Array.prototype.slice.call(document.querySelectorAll('.monaco-editor.pine-editor-monaco'));
+          var monacoEl = monacoEls.find(function(el) { return el.offsetParent !== null; });
+          pineDialog = document.querySelector('[data-qa-id="pine-editor-dialog"]');
+          pineButton = document.querySelector('button[aria-label="Pine"][data-name="pine-dialog-button"]');
+          isOpen = !!monacoEl || !!(pineDialog && pineDialog.offsetParent !== null);
+        }
         if (panel === 'strategy-tester') { var stratPanel = document.querySelector('[data-name="backtesting"]') || document.querySelector('[class*="strategyReport"]'); isOpen = isOpen && !!(stratPanel && stratPanel.offsetParent); }
         var performed = 'none';
         if (action === 'open' || (action === 'toggle' && !isOpen)) {
-          if (panel === 'pine-editor') { if (typeof bwb.activateScriptEditorTab === 'function') bwb.activateScriptEditorTab(); else if (typeof bwb.showWidget === 'function') bwb.showWidget(widgetName); }
-          else { if (typeof bwb.showWidget === 'function') bwb.showWidget(widgetName); }
-          performed = 'opened';
+          if (panel === 'pine-editor') {
+            if (!isOpen && pineButton) pineButton.click();
+            else if (!isOpen && typeof bwb.activateScriptEditorTab === 'function') bwb.activateScriptEditorTab();
+            else if (!isOpen && typeof bwb.showWidget === 'function') bwb.showWidget(widgetName);
+          } else if (typeof bwb.showWidget === 'function') {
+            bwb.showWidget(widgetName);
+          }
+          performed = isOpen ? 'already_open' : 'opened';
         } else if (action === 'close' || (action === 'toggle' && isOpen)) {
-          if (typeof bwb.hideWidget === 'function') bwb.hideWidget(widgetName);
-          performed = 'closed';
+          if (!isOpen) {
+            performed = 'already_closed';
+          } else if (panel === 'pine-editor') {
+            var closeBtn = (pineDialog && pineDialog.querySelector('button[aria-label="Close"], button[aria-label="Schließen"]')) ||
+              Array.prototype.slice.call(document.querySelectorAll('button[aria-label="Close"], button[aria-label="Schließen"]')).find(function(button) { return button.offsetParent !== null; });
+            if (closeBtn) { closeBtn.click(); performed = 'closed'; }
+            else if (pineButton) { pineButton.click(); performed = 'closed'; }
+            else if (typeof bwb.hideWidget === 'function') { bwb.hideWidget(widgetName); performed = 'closed'; }
+            else { return { error: 'No supported Pine editor close control found' }; }
+          } else if (typeof bwb.hideWidget === 'function') {
+            bwb.hideWidget(widgetName);
+            performed = 'closed';
+          } else if (typeof bwb.close === 'function') {
+            bwb.close();
+            performed = 'closed';
+          } else {
+            return { error: 'No supported bottom-panel close control found' };
+          }
         }
         return { was_open: isOpen, performed: performed };
       })()

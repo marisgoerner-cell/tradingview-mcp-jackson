@@ -1,7 +1,7 @@
 /**
  * Core replay mode logic.
  */
-import { evaluate, getReplayApi } from '../connection.js';
+import { evaluate, evaluateAsync, getReplayApi } from '../connection.js';
 
 function wv(path) {
   return `(function(){ var v = ${path}; return (v && typeof v === 'object' && typeof v.value === 'function') ? v.value() : v; })()`;
@@ -65,15 +65,42 @@ export async function autoplay({ speed } = {}) {
 
 export async function stop() {
   const rp = await getReplayApi();
-  const started = await evaluate(wv(`${rp}.isReplayStarted()`));
-  if (!started) {
-    // Try to hide toolbar even if not started
-    try { await evaluate(`${rp}.hideReplayToolbar()`); } catch {}
-    return { success: true, action: 'already_stopped' };
-  }
-  await evaluate(`${rp}.stopReplay()`);
-  try { await evaluate(`${rp}.hideReplayToolbar()`); } catch {}
-  return { success: true, action: 'replay_stopped' };
+  const result = await evaluateAsync(`
+    (async function() {
+      var replay = ${rp};
+      function unwrap(value) {
+        return value && typeof value.value === 'function' ? value.value() : value;
+      }
+      var started = !!unwrap(replay.isReplayStarted());
+      var manager = replay._replayUIController && replay._replayUIController._replayManager;
+
+      if (started && manager) {
+        // TradingView can leave this private guard stuck after an interrupted
+        // close request. Reset it once before invoking the synchronous stop.
+        if (manager._isReplayStopping === true) manager._isReplayStopping = false;
+        if (typeof manager._stopReplay === 'function') manager._stopReplay();
+        else if (typeof manager.stopReplay === 'function') manager.stopReplay();
+      } else if (started && typeof replay.goToRealtime === 'function') {
+        replay.goToRealtime();
+      }
+
+      if (typeof replay.stopReplay === 'function') {
+        await Promise.resolve(replay.stopReplay());
+      }
+
+      return {
+        was_started: started,
+        stopped: !unwrap(replay.isReplayStarted()),
+        toolbar_visible: !!unwrap(replay.isReplayToolbarVisible()),
+      };
+    })()
+  `);
+  return {
+    success: true,
+    action: result.was_started ? 'replay_stopped' : 'already_stopped',
+    stopped: result.stopped,
+    toolbar_visible: result.toolbar_visible,
+  };
 }
 
 export async function trade({ action }) {
